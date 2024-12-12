@@ -6,7 +6,7 @@ use serde_derive::Deserialize;
 use tokio::time::{self, Duration, Instant};
 use toml;
 
-use std::{fs, sync::Arc};
+use std::{fs, sync::Arc, thread};
 
 lazy_static! {
     pub static ref conf: Arc<Mutex<Config>> = Arc::new(Mutex::new(Config::new("./config.toml")));
@@ -75,6 +75,8 @@ impl Config {
 
             // just try to catch the first event and then return everytime
             if now.duration_since(*time_lock).as_millis() >= 25 {
+                // introduce small delay to cope with the many different file saving things
+                thread::sleep(Duration::from_millis(50));
                 Self::config_reload();
             }
 
