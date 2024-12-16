@@ -8,10 +8,16 @@ use toml;
 
 use std::{fs, sync::Arc, thread};
 
+/// AM<T>> short cut
+pub type AM<T> = Arc<Mutex<T>>;
+/// Thread fn pointer
+pub type TFnPtr = Box<dyn Fn() + Send + Sync>;
+
 lazy_static! {
-    pub static ref conf: Arc<Mutex<Config>> = Arc::new(Mutex::new(Config::new("./config.toml")));
-    static ref running_threads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-    static ref last_event: Arc<Mutex<Instant>> = Arc::new(Mutex::new(Instant::now()));
+    pub static ref conf: AM<Config> = Arc::new(Mutex::new(Config::new("./config.toml")));
+    static ref running_threads: AM<Vec<String>> = Arc::new(Mutex::new(vec![]));
+    static ref last_event: AM<Instant> = Arc::new(Mutex::new(Instant::now()));
+    static ref callbacks: AM<Vec<TFnPtr>> = Arc::new(Mutex::new(vec![]));
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -30,6 +36,7 @@ pub struct Global {
     pub cool_string: String,
 }
 
+/// open the config file and return the contents of it parsed to the struct
 fn open_config(path: &str) -> InnerConfig {
     let contents = match fs::read_to_string(path) {
         Ok(c) => c,
@@ -57,10 +64,20 @@ impl Config {
         }
     }
 
-    pub fn start_watchdog(config: Arc<Mutex<Self>>) {
+    /// Starts the file watchdog needed for hot reloading config files
+    pub fn start_watchdog(config: AM<Self>) {
         tokio::spawn(Self::watchdog_thread(config));
     }
 
+    /// Add callbacks that trigger when the config updates
+    pub fn add_callback(callback: TFnPtr) {
+        let ptr = callbacks.clone();
+        let mut lock = ptr.lock();
+
+        lock.push(callback);
+    }
+
+    /// manually reload the config
     pub fn config_reload() {
         let mut config_lock = conf.lock();
         let data = open_config(&config_lock.path);
@@ -68,6 +85,7 @@ impl Config {
         config_lock.global = data.global;
     }
 
+    /// Event handler for the file watcher
     fn do_stuff(event: notify::Event) {
         if let notify::EventKind::Modify(_) = event.kind {
             let mut time_lock = last_event.lock();
@@ -78,13 +96,22 @@ impl Config {
                 // introduce small delay to cope with the many different file saving things
                 thread::sleep(Duration::from_millis(50));
                 Self::config_reload();
+
+                {
+                    // call all the callbacks
+                    let cb_lock = callbacks.lock();
+                    for i in cb_lock.iter() {
+                        i();
+                    }
+                }
             }
 
             *time_lock = Instant::now();
         }
     }
 
-    async fn watchdog_thread(config: Arc<Mutex<Self>>) -> Result<()> {
+    /// Start watchdog
+    async fn watchdog_thread(config: AM<Self>) -> Result<()> {
         let mut interval = time::interval(Duration::from_secs(1));
         let path = config.clone().lock().path.clone();
 
